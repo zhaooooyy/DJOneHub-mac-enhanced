@@ -106,7 +106,7 @@ func TestParseMacNetworkServices(t *testing.T) {
 	}
 }
 
-func TestIsDJICellularServiceRelaxed(t *testing.T) {
+func TestIsDJICellularServiceUsesHardwareIdentity(t *testing.T) {
 	tests := []struct {
 		name    string
 		service macNetworkService
@@ -118,9 +118,14 @@ func TestIsDJICellularServiceRelaxed(t *testing.T) {
 			want:    true,
 		},
 		{
-			name:    "service name contains baiwang",
+			name:    "service name alone is not trusted",
 			service: macNetworkService{Name: "Baiwang", HardwarePort: "USB LAN", Device: "en6"},
-			want:    true,
+			want:    false,
+		},
+		{
+			name:    "stale service on Apple interface is rejected",
+			service: macNetworkService{Name: "Baiwang 2", HardwarePort: "Ethernet Adapter (en2)", Device: "en2"},
+			want:    false,
 		},
 		{
 			name:    "mixed case",

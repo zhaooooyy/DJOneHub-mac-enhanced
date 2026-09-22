@@ -991,6 +991,27 @@ async function loadNetwork() {
   }
 }
 
+async function enableMac4G() {
+  const button = $("#enable-mac-4g");
+  const confirmed = await showConfirm({
+    title: "启用 Mac 4G 上网？",
+    message: "将把模块切换为 macOS 可识别的 USB 网卡模式并重启一次。过程约 30 秒，不会删除 SIM、短信或 eSIM 数据。",
+    confirmLabel: "启用并重启",
+  });
+  if (!confirmed) return;
+  button.disabled = true;
+  try {
+    const result = await api("/api/network/enable-mac", { method: "POST" });
+    notice(result.message || "模块正在重启，请稍候");
+    setTimeout(loadNetwork, 12000);
+    setTimeout(loadNetwork, 30000);
+  } catch (error) {
+    notice(`启用 Mac 4G 失败：${error.message}`);
+  } finally {
+    setTimeout(() => { button.disabled = false; }, 30000);
+  }
+}
+
 function formatTrafficBytes(value) {
   const bytes = Math.max(0, Number(value || 0));
   const units = ["B", "KB", "MB", "GB", "TB"];
@@ -1429,6 +1450,7 @@ $("#clear-module-sms").addEventListener("click", async () => {
 $("#refresh-esim").addEventListener("click", loadESIM);
 $("#probe-esim-phonebook").addEventListener("click", probeESIMPhonebook);
 $("#refresh-network").addEventListener("click", loadNetwork);
+$("#enable-mac-4g").addEventListener("click", enableMac4G);
 $("#gps-toggle").addEventListener("click", toggleGPS);
 $("#gps-header-toggle").addEventListener("click", toggleGPS);
 $("#gps-refresh").addEventListener("click", async () => {

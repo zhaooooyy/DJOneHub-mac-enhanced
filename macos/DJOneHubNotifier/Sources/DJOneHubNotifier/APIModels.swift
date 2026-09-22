@@ -579,6 +579,10 @@ extension DJOneHubAPI {
         try await postDecoded(path: "api/network/check-proxy", body: EmptyBody())
     }
 
+    func enableMacUSBNetwork() async throws -> EnableMacNetworkResponse {
+        try await postDecoded(path: "api/network/enable-mac", body: EmptyBody())
+    }
+
     func rebootModule() async throws {
         try await post(path: "api/network/reboot-module", body: EmptyBody())
     }
@@ -686,6 +690,12 @@ struct NetworkDiagnostic: Codable, Sendable {
         case usbNetworkPresent = "usb_network_present"
         case usbDevice = "usb_device"
     }
+}
+
+struct EnableMacNetworkResponse: Codable, Sendable {
+    let accepted: Bool
+    let mode: Int
+    let message: String
 }
 
 struct PDPContext: Codable, Sendable {

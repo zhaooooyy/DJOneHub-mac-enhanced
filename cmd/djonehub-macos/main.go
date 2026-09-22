@@ -1147,6 +1147,7 @@ func (a *app) routes() http.Handler {
 	mux.HandleFunc("POST /api/network/cellular-policy", a.setCellularPolicy)
 	mux.HandleFunc("POST /api/network/check-4g", a.check4GRoute)
 	mux.HandleFunc("POST /api/network/check-proxy", a.checkProxyRoute)
+	mux.HandleFunc("POST /api/network/enable-mac", a.enableMacUSBNetwork)
 	mux.HandleFunc("POST /api/network/usbnet", a.setUSBNetMode)
 	mux.HandleFunc("POST /api/network/reboot-module", a.rebootModule)
 	mux.HandleFunc("POST /api/module/network-wake/uninstall", a.uninstallModuleNetworkWakeAPI)
@@ -2353,9 +2354,12 @@ func parseMacNetworkServices(output string) []macNetworkService {
 
 func isDJICellularService(service macNetworkService) bool {
 	port := strings.ToLower(strings.TrimSpace(service.HardwarePort))
-	name := strings.ToLower(strings.TrimSpace(service.Name))
-	matchesBaiwang := strings.Contains(port, "baiwang") || strings.Contains(name, "baiwang")
-	return matchesBaiwang && regexp.MustCompile(`^en\d+$`).MatchString(service.Device)
+	// The service name is user-controlled and is not evidence that the backing
+	// interface belongs to the modem. Older builds created services named
+	// "Baiwang" on unrelated, locally administered Apple interfaces (notably
+	// en2). Only trust the hardware-port identity reported by macOS.
+	matchesModem := strings.Contains(port, "baiwang") || strings.Contains(port, "quectel") || strings.Contains(port, "dji 4g")
+	return matchesModem && regexp.MustCompile(`^en\d+$`).MatchString(service.Device)
 }
 
 func setMacNetworkServiceEnabled(name string, enabled bool) error {
@@ -2412,22 +2416,14 @@ func (a *app) ensureCellularDHCP() {
 		target = service.Name
 		break
 	}
-	// No service yet: on a machine that never saw this module, macOS may not
-	// have created a network service for the modem's USB adapter. Create one
-	// so DHCP can be renewed automatically.
+	// Never guess an unprovisioned modem interface from its MAC address. Apple
+	// internal and virtual interfaces also use locally administered addresses;
+	// treating one of them as the modem creates broken duplicate services. A
+	// real ECM interface is provisioned by macOS with the USB hardware-port
+	// identity and will be picked up on the next repair pass.
 	if target == "" {
-		device := findUnprovisionedUSBModemInterface(services)
-		if device == "" {
-			log.Printf("cellular DHCP repair: no DJI cellular network service and no unprovisioned USB interface")
-			return
-		}
-		var err error
-		target, err = createCellularNetworkService(device)
-		if err != nil {
-			log.Printf("cellular DHCP repair: create network service on %s failed: %v", device, err)
-			return
-		}
-		log.Printf("cellular DHCP repair: created network service %s on %s", target, device)
+		log.Printf("cellular DHCP repair: no verified Baiwang/Quectel USB network service; waiting for macOS USB networking")
+		return
 	}
 	if _, err := readMacIPv4ServiceInfo(target); err == nil {
 		return
@@ -2778,6 +2774,48 @@ func (a *app) setUSBNetMode(w http.ResponseWriter, r *http.Request) {
 		"mode":         body.Mode,
 		"response":     response,
 		"needs_reboot": true,
+	})
+}
+
+// enableMacUSBNetwork is the safe, purpose-built replacement for asking users
+// to send a configuration-changing command through the read-only AT console.
+// Quectel usbnet=1 exposes ECM, which macOS can use as a native USB Ethernet
+// interface. The operation is idempotent and reboots only when a change is
+// required.
+func (a *app) enableMacUSBNetwork(w http.ResponseWriter, _ *http.Request) {
+	current, err := a.runATCommand(`AT+QCFG="usbnet"`, 5*time.Second)
+	if err != nil {
+		writeError(w, http.StatusBadGateway, fmt.Sprintf("读取 USB 网卡模式失败: %v", err))
+		return
+	}
+	if parseUSBNetMode(current) == "1" {
+		go a.ensureCellularDHCP()
+		writeJSON(w, http.StatusOK, map[string]any{
+			"accepted": false,
+			"mode":     1,
+			"message":  "模块已处于 Mac USB 网卡模式，正在重新获取网络地址",
+		})
+		return
+	}
+	response, err := a.runATCommand(`AT+QCFG="usbnet",1`, 8*time.Second)
+	if err != nil {
+		writeError(w, http.StatusBadGateway, fmt.Sprintf("启用 Mac USB 网卡失败: %v", err))
+		return
+	}
+	if !atProbeSucceeded(response) || atResponseIsError(response) {
+		writeError(w, http.StatusBadGateway, fmt.Sprintf("模块拒绝启用 Mac USB 网卡: %s", strings.TrimSpace(response)))
+		return
+	}
+	response, err = a.runATCommand("AT+CFUN=1,1", 4*time.Second)
+	if err != nil {
+		writeError(w, http.StatusBadGateway, fmt.Sprintf("USB 网卡模式已写入，但模块重启失败: %v", err))
+		return
+	}
+	a.markUSBATDetached("enable Mac USB network reboot")
+	writeJSON(w, http.StatusAccepted, map[string]any{
+		"accepted": true,
+		"mode":     1,
+		"message":  "已启用 Mac USB 网卡，模块正在重启；请等待约 30 秒",
 	})
 }
 

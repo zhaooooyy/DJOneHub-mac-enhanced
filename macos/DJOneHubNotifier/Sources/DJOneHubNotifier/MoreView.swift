@@ -29,6 +29,7 @@ struct MoreView: View {
     @State private var busy = false
     @State private var showMobileProfileConfirm = false
     @State private var showMacProfileConfirm = false
+    @State private var showMacNetworkConfirm = false
 
     private var profiles: [ESIMProfile] {
         esim?.profiles?.flatMap { $0.profiles ?? [] } ?? []
@@ -77,6 +78,29 @@ struct MoreView: View {
                     subtitle: L10n.t("关闭后强制禁止 Mac 使用 4G；短信和来电监控不受影响"),
                     isOn: cellularBinding
                 )
+                Divider().padding(.leading, 14)
+                HStack(spacing: 10) {
+                    Image(systemName: "cable.connector.horizontal")
+                        .font(.body)
+                        .foregroundStyle(Color.accentColor)
+                        .frame(width: 22)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(L10n.t("Mac USB 4G 网卡"))
+                            .font(.system(size: 13, weight: .medium))
+                        Text(networkDiag?.usbnetMode == "1" ? L10n.t("已启用；macOS 可通过模块获取网络") : L10n.t("当前未启用，关闭 Wi‑Fi 后将无法上网"))
+                            .font(.system(size: 10))
+                            .foregroundStyle(.secondary)
+                    }
+                    Spacer(minLength: 4)
+                    Button(networkDiag?.usbnetMode == "1" ? L10n.t("重新获取地址") : L10n.t("启用")) {
+                        showMacNetworkConfirm = true
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.small)
+                    .disabled(busy)
+                }
+                .padding(.horizontal, 14)
+                .padding(.vertical, 10)
                 Divider().padding(.leading, 14)
                 GPSPanel()
                 Divider().padding(.leading, 14)
@@ -462,6 +486,12 @@ struct MoreView: View {
         } message: {
             Text("模块将恢复 USB 音频并重新连接。完成后可继续使用通话功能。")
         }
+        .confirmationDialog("启用 Mac 4G 上网？", isPresented: $showMacNetworkConfirm, titleVisibility: .visible) {
+            Button("启用并重启模块") { Task { await enableMacNetwork() } }
+            Button("取消", role: .cancel) {}
+        } message: {
+            Text("模块将切换到 macOS 可识别的 USB 网卡模式并重启一次，约需 30 秒。不会删除 SIM、短信或 eSIM 数据。")
+        }
     }
 
     private var cellularBinding: Binding<Bool> {
@@ -492,6 +522,7 @@ struct MoreView: View {
         async let e: ESIMOverview? = try? calls.apiClient.esimOverview()
         async let h: ESIMHealth? = try? calls.apiClient.esimHealth()
         async let n: [String: ESIMNote]? = try? calls.apiClient.esimNotes()
+        async let d: NetworkDiagnostic? = try? calls.apiClient.networkDiagnostic()
         modem = await m
         traffic = await t
         policy = await p
@@ -499,6 +530,7 @@ struct MoreView: View {
         esim = await e
         esimHealth = await h
         esimNotes = await n ?? [:]
+        networkDiag = await d
     }
 
     private func applyUSBProfile(_ mode: String) async {
@@ -524,6 +556,20 @@ struct MoreView: View {
         do {
             try await calls.apiClient.rebootModule()
             message = L10n.t("已发送模块重启指令")
+        } catch {
+            message = error.localizedDescription
+        }
+    }
+
+    private func enableMacNetwork() async {
+        busy = true
+        defer { busy = false }
+        do {
+            let result = try await calls.apiClient.enableMacUSBNetwork()
+            message = result.message
+            try? await Task.sleep(nanoseconds: result.accepted ? 12_000_000_000 : 2_000_000_000)
+            await loadNetworkDiagnostic()
+            modem = try? await calls.apiClient.modemStatus()
         } catch {
             message = error.localizedDescription
         }
