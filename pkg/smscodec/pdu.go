@@ -22,6 +22,46 @@ type SubmitOptions struct {
 	Encoding SMSEncoding
 }
 
+// NormalizeDestinationNumber removes common contact-card formatting and
+// converts mainland China mobile numbers to an unambiguous international
+// address.  The TPDU library marks ordinary destination numbers as
+// international, so passing an 11-digit domestic number through unchanged
+// would incorrectly encode 138... as +138... instead of +86138....
+func NormalizeDestinationNumber(raw string) string {
+	trimmed := strings.TrimSpace(raw)
+	var b strings.Builder
+	for i, r := range trimmed {
+		if r >= '0' && r <= '9' {
+			b.WriteRune(r)
+			continue
+		}
+		if r == '+' && i == 0 {
+			b.WriteRune(r)
+			continue
+		}
+		switch r {
+		case ' ', '\t', '\r', '\n', '-', '(', ')':
+			// Common formatting characters in macOS Contacts.
+		default:
+			// Preserve unexpected characters so the PDU encoder rejects an
+			// invalid address instead of silently sending to a different one.
+			b.WriteRune(r)
+		}
+	}
+	normalized := b.String()
+	digits := strings.TrimPrefix(normalized, "+")
+	switch {
+	case strings.HasPrefix(digits, "0086") && len(digits) == 15:
+		return "+" + digits[2:]
+	case !strings.HasPrefix(normalized, "+") && len(digits) == 13 && strings.HasPrefix(digits, "861"):
+		return "+" + digits
+	case !strings.HasPrefix(normalized, "+") && len(digits) == 11 && strings.HasPrefix(digits, "1"):
+		return "+86" + digits
+	default:
+		return normalized
+	}
+}
+
 func NormalizeSMSEncoding(raw string) (SMSEncoding, error) {
 	switch strings.ToLower(strings.TrimSpace(raw)) {
 	case "", string(SMSEncodingAuto):
@@ -111,7 +151,7 @@ func IsShortCode(phone string) bool {
 
 // BuildSubmitTPDUsWithOptions 编码上行短信为一组 SUBMIT TPDU，并允许调用方指定文本编码策略。
 func BuildSubmitTPDUsWithOptions(to, text string, opts SubmitOptions) ([][]byte, []int, error) {
-	normalizedTo := strings.TrimSpace(to)
+	normalizedTo := NormalizeDestinationNumber(to)
 	encoding, err := NormalizeSMSEncoding(string(opts.Encoding))
 	if err != nil {
 		return nil, nil, err
